@@ -348,7 +348,10 @@ class SimplicalComplex(SimplexNode):
         self.hypergraph = hypergraph
         self.n = min(max_simplex_dim, len(hypergraph[-1]))
 
-        logging.info(' Creating Simplical Complex:')
+        logging.info(f' Creating Simplical Complex with \n \
+            \t max_simplex_dim : {max_simplex_dim} \n \
+            \t threshold : {threshold} \
+            ')
         for hyperedge in tqdm(hypergraph):
             hyperedge.sort()
             empty_label = Label([])
@@ -359,6 +362,8 @@ class SimplicalComplex(SimplexNode):
         incidence_matrices = get_cross_persisted_matrices(self.n - 1)
         self.log_incidence(incidence_matrices)
         incidence_matrices = [l.collapse_to_csr() for l in incidence_matrices]
+        incidence_matrices = [l for l in incidence_matrices if l != None]
+        self.n = len(incidence_matrices)
         self.incidence_matrices = incidence_matrices
 
         # have to create a big persistor for all the depth 0 simplices, ie nodes
@@ -418,8 +423,14 @@ def generate_embedding(s: SimplicalComplex, depth=3, max_dim_per_simplex_dim=10)
     persistor = s.node_persistor
     embedding = None
 
-    depth = min(s.n-2, depth)
-    logging.info(f' Generating embedding with {depth} depth')
+    _depth = min(s.n, depth)
+    if _depth < depth:
+        logging.warning('The simplex has less dimesnions than reqested.')
+    depth = _depth
+    logging.info(f' Generating embedding with \n \
+        \t depth: {depth} \n \
+        \t max_dimenson_per_simplex: {max_dim_per_simplex_dim}\
+        ')
 
     for i in range(depth):
 
