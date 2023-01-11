@@ -24,17 +24,26 @@ def read_zabka_csv(csv_path):
 
 def exp1():
     data = experiment_driver(
-        [3 + i for i in range(10)],
-        [50 + 5 * i for i in range(10)],
+        [5 + i for i in range(3)],
+        [75 + 5 * i for i in range(3)],
         [3 + i for i in range(3)]
     )
 
 def experiment_driver(max_simplex_dims: list, tresholds: list, embedding_depths: list):
     (nodes_num, edges, hyperedges) = read_zabka_csv('~/Downloads/zabka.csv')
 
+    results = simplex.HashMatrixBuilder()
+
     for max_simplex_dim in max_simplex_dims:
+        scores = []
         for treshold in tresholds:
-            run(hyperedges, max_simplex_dim, treshold, embedding_depths)
+
+            score = run(hyperedges, max_simplex_dim, treshold, embedding_depths)
+            results[(max_simplex_dim, treshold)] = score
+
+    hsm = results.collapse_to_csr()
+
+    print(hsm)
 
     
 def run(hyperedges, max_simplex_dim, threshold, embedding_depths: list):
@@ -55,13 +64,11 @@ def run(hyperedges, max_simplex_dim, threshold, embedding_depths: list):
             edges_remapped
         )
 
+        embedding = simplex.generate_embedding(s, 10)
+        score = link_prediction_metric(embedding)
 
-        for depth in embedding_depths:
-            embedding = simplex.generate_embedding(s, depth)
-
-            score = link_prediction_metric(embedding)
-
-            logging.info(f' Score: {score}')
+        logging.info(f' Score: {score}')
+        return score
 
 
 if __name__ == '__main__':

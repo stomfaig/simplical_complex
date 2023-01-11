@@ -56,7 +56,8 @@ class Label:
 
 class Persistor:
 
-    def __init__(self):
+    def __init__(self, label=''):
+        self.label = ''
         self.persistor = {}
 
     def create(self, location):
@@ -107,11 +108,15 @@ class Persistor:
 
 class MultiPersistor:
 
-    def __init__(self, k=0):
+    # TODO imnclude labels here
+    def __init__(self, k=0, *labels):
         self.k = k
-        self.persistors = [Persistor() for _ in range(k)]
+        self.persistors = [Persistor() for i in range(k)]
 
     def get_or_create(self, location: tuple):
+        if len(location) != self.k:
+            raise IndexError('location dim and persistor dim doesn\'t match')
+
         index = [None for _ in range(self.k)]
 
         for (i, location_single) in enumerate(location):
@@ -123,12 +128,12 @@ class MultiPersistor:
         if len(location) != self.k:
             raise IndexError('location dim and persistor dim doesn\'t match')
         
-        index = tuple([None for _ in range(self.k)])
+        index = [None for _ in range(self.k)]
 
         for (i, location_single) in enumerate(location):
             index[i] = self.persistors[i].get(location_single)
 
-        return index
+        return tuple(index)
     
     def get_persistor(self, i):
         return self.persistors[i]
@@ -148,61 +153,118 @@ class MultiPersistor:
     def __str__(self):
         return '\n'.join([str(persistor) for persistor in self.persistors])
 
-class HashMatrix:
-    
-    def __init__(self, tensor: torch.tensor, persistor: MultiPersistor):
+class HashTensor:
+
+    def __init__(self, n, m, tensor: torch.tensor, persistor: MultiPersistor):
+        self.n = n
+        self.m = m
         self.tensor = tensor
         self.persistor = persistor
 
     def __getitem__(self, location: list):
-        (row, col) = self.persistor.get(location)
+        index = self.persistor.get(location)
 
-        return self.tensor[row, col]
-    
-    def align(self, other: Persistor, align_dir=1):
-        if self.tensor.is_sparse:
-            raise ValueError('HashMatrix tensor must be dense for alignment!')
-
-        persistor = self.persistor.get_persistor(align_dir)
-
-        for key in other.keys():
-            if not key in persistor.keys():
-                
-                self.tensor = torch.cat((
-                        self.tensor,
-                        torch.transpose(
-                            torch.zeros(1, len(self.persistor.get_persistor(1 - align_dir))),
-                            0,
-                            align_dir
-                        )
-                    ),
-                    align_dir
-                    )
-                
-                persistor.update({key : (len(persistor))})
-
-        for key in other.keys():
-            if other[key] != persistor[key]:
-
-                order = list(range(len(persistor)))
-
-                order[other[key]] = persistor[key]
-                order[persistor[key]] = other[key]
-
-                self.tensor = torch.index_select(self.tensor, align_dir, torch.tensor(order))
-
-                swap_key = list(persistor.keys())[list(persistor.values()).index(other[key])]
-                temp = persistor[key]
-                persistor[key] = other[key]
-                persistor[swap_key] = temp
-                
-
+        return self.tensor[index]
 
     def get_tensor(self):
         return self.tensor
 
     def size(self):
         return self.tensor.size()
+
+    def pretty_print(self, depth=0, path=(), print_header=(lambda x : print(f'__DATA TABLE__ \n{str(x)}'))):
+        
+        if depth >= self.n-2:
+            row_persistor = self.persistor.get_persistor(self.n-2)
+            col_persistor = self.persistor.get_persistor(self.n-1)
+            
+            for i in range(self.m):
+                print_header(f'row: {row_persistor.label}\ncols: {col_persistor.label}')
+
+                header = ''
+                body = ''
+
+                for head in col_persistor.persistor:
+                    header += '\t' + str(head)
+
+                for x in row_persistor.persistor:
+                    
+                    body += str(x)
+                    for y in col_persistor.persistor:
+                        body += '\t'
+                        index = self.persistor.get((*path, x, y))
+                        body += str(round(self.tensor[index][i].item(), 2))
+                    body += '\n'
+
+                print(header)
+                print(body)            
+
+            return
+
+        persistor = self.persistor.get_persistor(depth)
+
+        for key in persistor.persistor:
+            _depth = depth + 1
+            _path = (*path, key)
+            _print_header = lambda x : print_header(f'{persistor.label} : {key}\n{str(x)}')
+           
+            self.pretty_print(_depth, _path, _print_header)
+
+
+class HashTensorBuilder:
+
+    def __init__(self, n, m, persistor=None, header=''):
+        self.n = n
+        self.m = m
+        self.header = header
+        self.items = {}
+        if persistor is None:
+            self.persistor = MultiPersistor(n)
+        else:
+            self.persistor = persistor
+
+    def __setitem__(self, location: tuple, item):
+        index = self.persistor.get_or_create(location)
+
+        if not isinstance(item, list):
+            item = [item]
+        
+        if len(item) != self.m:
+            raise ValueError('Value passed is not of the right dimensions')
+
+        self.items.update({index : item})
+
+    def __getitem__(self, location: tuple):
+        index = self.persistor.get(location)
+        if self.m == 1:
+            return self.items[index][0]
+        return self.items[index]
+
+    def collapse(self):
+        size = (*self.persistor.size(), self.m)
+        t = torch.zeros(size)
+
+        for item in self.items:
+            t[item] = torch.tensor(self.items[item])
+
+        hash_tensor = HashTensor(
+            self.n,
+            self.m,
+            t,
+            self.persistor
+        )
+
+        return hash_tensor
+    
+    # TODO
+    def collapse_to_csr(self):
+        pass
+
+
+class HashMatrix(HashTensor):
+    
+    def __init__(self, tensor: torch.tensor, persistor: MultiPersistor):
+        super().__init__(2, 1, tensor, persistor)
 
 class HashMatrixBuilder:
 
@@ -256,7 +318,9 @@ class HashMatrixBuilder:
             columns[ix].append(iy)
             column_values[ix].append(self.items[item])
 
-
+        for i in range(len(columns)):
+            columns[i].sort()
+        
         crow_indices = torch.tensor([sum(row_counts[0:i]) for i in range(len(row_counts)+1)], dtype=torch.long)
         col_indices = torch.cat([torch.tensor(l) for l in columns]).type(torch.long)
         values = torch.cat([torch.tensor(l) for l in column_values])
@@ -267,6 +331,10 @@ class HashMatrixBuilder:
                     crow_indices,
                     col_indices,
                     values,
+                    size=torch.Size((
+                        len(self.persistor.get_persistor(0)),
+                        len(self.persistor.get_persistor(1))
+                    )),
                     dtype=torch.float64
                 )
 
@@ -383,6 +451,8 @@ class SimplicalComplex(SimplexNode):
                 torch.t(T)
             )
 
+        logging.info(f' shape of T: {T.size()}')
+
         if k == 0:
             return HashMatrix(L, self.incidence_matrices[k].persistor.get_persistor(0).extend(2))
 
@@ -391,6 +461,8 @@ class SimplicalComplex(SimplexNode):
                 torch.t(t),
                 t
             )
+
+        logging.info(f' shape of t: {t.size()}')
 
         if k == self.n:
             return HashMatrix(l, self.incidence_matrices[k].persistor)
@@ -418,21 +490,21 @@ def get_cross_persisted_matrices(k):
 
     return hash_matrix_builders
 
-def generate_embedding(s: SimplicalComplex, depth=3, max_dim_per_simplex_dim=10):
+def generate_embedding(s: SimplicalComplex, depth=3, max_dim_per_simplex_dim=128):
 
     persistor = s.node_persistor
     embedding = None
 
     _depth = min(s.n, depth)
     if _depth < depth:
-        logging.warning('The simplex has less dimesnions than reqested.')
+        logging.warning(' The simplex has less dimesnions than reqested, embedding depth has changed.')
     depth = _depth
     logging.info(f' Generating embedding with \n \
         \t depth: {depth} \n \
         \t max_dimenson_per_simplex: {max_dim_per_simplex_dim}\
         ')
 
-    for i in range(depth):
+    for i in range(depth-1):
 
         laplacian = s.get_k_laplacian(i)
         i_simplices_num = laplacian.size()[0]
@@ -465,5 +537,7 @@ def generate_embedding(s: SimplicalComplex, depth=3, max_dim_per_simplex_dim=10)
                 embedding_slice),
                 1
             )
+
+    logging.info(f' Generated embedding with dimesnions: {embedding.size()}')
 
     return embedding
